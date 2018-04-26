@@ -58,11 +58,13 @@ def plasma_wave_vg(vth, k, w=None, ne=None):
     :param ne: plasma density
     :return:
     """
+    wp = w if w else plasma_wave_w(ne, vth, k)
+    kk = k(np.real(wp)) if callable(k) else k
+    z = np.real(wp) / (kk * vth * np.sqrt(2))
     if not w:
-        w = plasma_wave_w(ne, vth, k)
-    kk = k(np.real(w)) if callable(k) else k
-    z = np.real(w) / (kk * vth * np.sqrt(2))
-    return np.real(w / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z))
+        return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z)), wp
+    else:
+        return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z))
 
 
 def light_wave_vg(k=None, w=None, ne=None):

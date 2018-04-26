@@ -123,8 +123,7 @@ def backward_srs_beta_forslung(intensity, ne, vth):
     :param ne: density normalized to critical density
     :param vth: thermal velocity
     """
-    w = None
-    vg = plds.plasma_wave_vg(vth, partial(backward_srs_k_epw, ne=ne), w=w, ne=ne)
+    vg, w = plds.plasma_wave_vg(vth, partial(backward_srs_k_epw, ne=ne), w=None, ne=ne)
     wr = np.real(w)
     vm, kp = plds.light_wave_vg(backward_srs_k_epw(wr, ne), wr), backward_srs_k_epw(wr, ne)
     return np.abs(np.imag(w)) / backward_srs_growthrate_h_ud(intensity, ne, k=kp, w=wr) * np.sqrt(vm / vg)
@@ -248,7 +247,10 @@ def backward_srs_lint_wdl(intensity, ln, ne, w=0, v1=0, v2=0, vth=None, waveleng
     :return: The unit is micron
     """
     if not v2 or not v1:
-        v2 = plds.plasma_wave_vg(vth, k=partial(backward_srs_k_epw, ne=ne), w=w, ne=ne)
+        if w:
+            v2 = plds.plasma_wave_vg(vth, k=partial(backward_srs_k_epw, ne=ne), w=w, ne=ne)
+        else:
+            v2, w = plds.plasma_wave_vg(vth, k=partial(backward_srs_k_epw, ne=ne), w=None, ne=ne)
         v1 = plds.light_wave_vg(backward_srs_k_epw(np.real(w), ne=ne) - np.sqrt(1 - ne), ne=ne)
 
     if approx:
@@ -390,7 +392,3 @@ def tpd_small_k(w, ne):
 def tpd_large_k(w, ne):
     pass
 
-
-# print(backward_srs_lint(scale_length(0.15, 0.09, 500, 0), 5, ne=0.12, vth=np.sqrt(2.6/511), accuracy_level=0))
-
-# print(backward_srs_lint_wdl(1000, 5, vth=np.sqrt(2.6/511), ne=0.12))
