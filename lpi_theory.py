@@ -30,13 +30,14 @@ def scale_length(dens_max, dens_min, x_max, x_min, x=None, ne=None):
     return (dens_max - dens_min) / ((x_max - x_min) * (x * (dens_max - dens_min) / (x_max - x_min) + dens_min))
 
 
-def vosc(intensity):
+def vosc(intensity, wavelength=0.351):
     """
-    convert intensity to electron oscillation velocity for 351-nm (3-omega) lasers
+    convert intensity to electron oscillation velocity
     :param intensity: in 10^14 Watt/cm^2
+    :param wavelength: wavelength of the laser in micron
     :return: oscillation velocity
     """
-    return 0.002999 * np.sqrt(intensity)
+    return 0.008544 * np.sqrt(intensity) * wavelength
 
 
 def phys_dens(ne, wavelength=0.351):
@@ -62,6 +63,7 @@ def phys_freq0(wavelength=0.351):
     :return: laser frequency in Hz
     """
     return 2.998E14 / wavelength
+
 
 def linear_landaudamping(wp=0, kld=None, k=None, vth=None, ne=None):
     """
@@ -107,8 +109,8 @@ def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, circul
     return __backward_srs_growthrate_h_ud_qutcr(k, intensity) * np.sqrt(ne / (w * (1 - w)))
 
 
-def __backward_srs_growthrate_h_ud_qutcr(k, intensity):
-    return k * vosc(intensity) / 4
+def __backward_srs_growthrate_h_ud_qutcr(k, intensity, wavelength=0.351):
+    return k * vosc(intensity, wavelength=wavelength) / 4
 
 
 def backward_srs_beta_forslung(intensity, ne, vth):
@@ -255,7 +257,7 @@ def backward_srs_lint_wdl(intensity, ln, ne, w=0, v1=0, v2=0, vth=None, waveleng
         if w == 0:
             w = np.real(plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne)))
         wr = np.real(w)
-        gamma0 = __backward_srs_growthrate_h_ud_qutcr(backward_srs_k_epw(wr, ne), intensity)
+        gamma0 = __backward_srs_growthrate_h_ud_qutcr(backward_srs_k_epw(wr, ne), intensity, wavelength=wavelength)
         if not gamma0_approx:
             gamma0 *= np.sqrt(ne / (wr * (1 - wr)))
         if kappa_prime_approx:
@@ -343,6 +345,39 @@ def backward_srs_lint(ln, intensity, ne, vth, v1=0, v2=0, wavelength=0.351, accu
                                              kappa_prime_approx=False, gamma0_approx=False)**2 +
                        backward_srs_lint_sdl(ln, ne, w=np.real(w), nu2=nu2, v1=v1, v2=v2, vth=vth,
                                              kappa_prime_approx=False)**2)
+
+
+def srs_side_scattering_growthrate(ln, intensity, ne, vth, k0=None, wavelength=0.351):
+    """
+    calculate the growth rate of Raman side scattering (absolutely unstable) modes for a given density.
+    see <Liu, C. S., Rosenbluth, M. N., & White, R. B. (1974). Raman and Brillouin scattering of electromagnetic
+    waves in inhomogeneous plasmas. The Physics of Fluids, 17(6), 1211–1219.> Eq. (57)
+
+    Here we assume the scattered light waves propagate exactly 90-degree to the incident laser
+    :param ln: plasma density scale length in micron
+    :param intensity: in 10^14 Watt/cm^2
+    :param ne: plasma density normalized to critical density
+    :param vth: thermal velocity
+    :param k0: wavenumber of the laser pump wave. If k0=None then sqrt(1-ne) will be used
+    :param wavelength: wavelength of the laser in micron
+    :return: normalized to \omega_0
+    """
+    # ve2 = TkeV / 511.0
+    # den = yaxis
+    ve2 = vth ** 2
+    kp = np.sqrt((1 - 3 * (ne - 2) * ve2 + 9 * (ne - 1) * ve2**2 -
+                  2 * np.sqrt(ne + 6 * ve2 - 9 * ne * ve2 - 9 * ve2**2 + 18 * ne * ve2**2)) / (1 - 3 * ve2)**2)
+    wpe = np.sqrt(ne)
+    if k0 is None:
+        k0 = np.sqrt(1 - ne)
+    # here we assume it is exact 90-degree sidescattering
+    nkc = np.sqrt(kp**2 + k0**2)
+    kL = nkc * ln / wavelength
+    v0 = 4.27e-3 * np.sqrt(intensity) * wavelength
+    drkN = 6.283 * ln / wavelength * v0**1.5 * np.sqrt(0.75)
+    gm = np.imag(complex(0.0, 1.0) * v0 * nkc * wpe * (1 - 0.5 * complex(np.sqrt(2) / 2.0, np.sqrt(2.) / 2.0) *
+                                                       np.sqrt(wpe / nkc) / drkN))
+    return gm
 
 
 #
