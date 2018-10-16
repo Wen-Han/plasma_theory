@@ -49,22 +49,29 @@ def plasma_wave_w(ne, vth, k, inital_root_guess=None):
     return epsilon_root
 
 
-def plasma_wave_vg(vth, k, w=None, ne=None):
+def plasma_wave_vg(vth, k, w=None, ne=None, kinetic=False):
     """
     calculate the group velocity of the plasma wave
     :param vth: thermal velocity
     :param k: wavenumber of the plasma wave, can be a number or a function of plasma wave frequency (i.e. k:=k(w))
     :param w: angular frequency of the plasma wave, if w=w0=0 then w0 will hold the value of omega satisfying dispersion
     :param ne: plasma density
+    :param kinetic: if True then use the kinetic dispersion
     :return:
     """
     wp = w if w else plasma_wave_w(ne, vth, k)
     kk = k(np.real(wp)) if callable(k) else k
-    z = np.real(wp) / (kk * vth * np.sqrt(2))
-    if not w:
-        return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z)), wp
+    if kinetic:
+        z = np.real(wp) / (kk * vth * np.sqrt(2))
+        if not w:
+            return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z)), wp
+        else:
+            return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z))
     else:
-        return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z))
+        if not w:
+            return 3. * np.real(kk) * vth * vth / np.real(wp), wp
+        else:
+            return 3. * np.real(kk) * vth * vth / np.real(wp)
 
 
 def light_wave_vg(k=None, w=None, ne=None):

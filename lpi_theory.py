@@ -86,7 +86,8 @@ def linear_landaudamping(wp=0, kld=None, k=None, vth=None, ne=None):
 #
 # ======================================== Stimulated Raman Scattering ================================================
 #
-def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, circular_laser=False):
+def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, wavelength=0.351,
+                                 circular_laser=False):
     """
     Raman back scattering growth rate in homogeneous plasmas when damping is not important.
     See <Forslund, D. W., Kindel, J. M., & Lindman, E. L. (1975).
@@ -97,6 +98,7 @@ def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, circul
     :param vth: thermal velocity
     :param k: wavenumber of the plasma daughter wave
     :param w: frequency of the plasma daughter wave
+    :param wavelength: wavelength of the laser in micron
     :param circular_laser: if the laser is circular polarized (as in the original paper). Default is False
     :return: growth rate normalized to laser frequency
     """
@@ -105,8 +107,8 @@ def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, circul
     if k is None:
         k = backward_srs_k_epw(w, ne)
     if circular_laser:
-        return __backward_srs_growthrate_h_ud_qutcr(k, intensity) * np.sqrt(2 * ne / (w * (1 - w)))
-    return __backward_srs_growthrate_h_ud_qutcr(k, intensity) * np.sqrt(ne / (w * (1 - w)))
+        return __backward_srs_growthrate_h_ud_qutcr(k, intensity, wavelength) * np.sqrt(2 * ne / (w * (1 - w)))
+    return __backward_srs_growthrate_h_ud_qutcr(k, intensity, wavelength) * np.sqrt(ne / (w * (1 - w)))
 
 
 def __backward_srs_growthrate_h_ud_qutcr(k, intensity, wavelength=0.351):
@@ -150,7 +152,7 @@ def forward_srs_k_epw(w, ne):
 
 
 def backward_srs_convective_gain(intensity, ne, ln, wavelength=0.351, nu1=0, nu2=0, author='Albright',
-                                 gamma0=0, kappa_prime=None, v1=None, v2=None):
+                                 gamma0=0, kappa_prime=None, vth=None, v1=None, v2=None):
     """
     calculate linear convective gain factor for backward SRS.
     depending on the author parameter, see
@@ -171,20 +173,33 @@ def backward_srs_convective_gain(intensity, ne, ln, wavelength=0.351, nu1=0, nu2
     :param author: select which formulation/convention
     :param gamma0: growth rate/coupling strength in homogeneous plasmas
     :param kappa_prime: mismatch in wavenumber
+    :param vth: thermal velocity. user must supply this parameter if kappa_prime=None and author/='Albright'.
     :param v1: group velocity of the light daughter wave
     :param v2: group velocity of the plasma daughter wave
     :return:
     """
-    def factor(_gamma0=0, _kappa_prime=None, _v1=None, _v2=None):
-        return _gamma0 * _gamma0 / np.abs(_kappa_prime * _v1 * _v2)
+    def factor(_gamma0=0, _kappa_prime=None, _v1=None, _v2=None, ln=None, ne=None, vth=None, wavelength=0.351):
+        wr = np.real(plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne)))
+        if _kappa_prime  is None:
+            k_p = _wavenumber_mismatch_backward_srs(ln, ne, vth, wavelength=wavelength, w=wr)
+        else:
+            k_p = _kappa_prime
+        return _gamma0 * _gamma0 / np.abs(k_p * _v1 * _v2)
 
     if author.lower() == 'albright':
         gamma0 = 0.0043 * wavelength * np.sqrt(intensity)
         gn = np.sqrt(1 - 2 * np.sqrt(ne)) / (1 / np.sqrt(ne) - 1)
         return 8 * np.pi * np.pi * gamma0 * gamma0 * ln / wavelength / gn * (1 - nu1 * nu2 / gamma0)
 
-    elif author.lower() == 'Rosenbluth':
-        return 2 * np.pi * factor(gamma0, kappa_prime, v1, v2)
+    elif author.lower() == 'rosenbluth':
+        w = np.real(plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne)))
+        if not gamma0:
+            gamma0 = backward_srs_growthrate_h_ud(intensity, ne, w=w, wavelength=wavelength)
+        if not v2 or not v1:
+            k = backward_srs_k_epw(w, ne)
+            v2 = plds.plasma_wave_vg(vth, k, w=w, ne=ne)
+            v1 = plds.light_wave_vg(k - np.sqrt(1 - ne), ne=ne)
+        return 2 * np.pi * factor(gamma0, kappa_prime, v1, v2, ln, ne, vth)
 
     elif author.lower() == 'willian':
         g = nu1 * nu2 / gamma0
@@ -195,7 +210,7 @@ def backward_srs_convective_gain(intensity, ne, ln, wavelength=0.351, nu1=0, nu2
         return 2 * np.pi * factor(gamma0, kappa_prime, v1, v2) * (1 - g) if g < 1 else 0
 
 
-def _wavenumber_mismatch_backward_srs(ln, ne, vth, k0=None, k=None, w=None):
+def _wavenumber_mismatch_backward_srs(ln, ne, vth, k0=None, k=None, w=None, wavelength=0.351):
     """
     calculate wavenumber mismatch as in <Liu, C. S., Rosenbluth, M. N., & White, R. B. (1974).
     Raman and Brillouin scattering of electromagnetic waves in inhomogeneous plasmas.
@@ -212,7 +227,7 @@ def _wavenumber_mismatch_backward_srs(ln, ne, vth, k0=None, k=None, w=None):
         k = backward_srs_k_epw(w, ne)
     if k0 is None:
         k0 = np.sqrt(1 - ne)
-    return ne / (2 * ln) * (1 / (k - k0) + 1 / (3 * k * vth * vth) - 1 / k0)
+    return ne / (4. * np.pi * ln / wavelength) * (1. / (k0 - k) + 1. / (3. * k * vth * vth) - 1. / k0)
 
 
 def backward_srs_lint_wdl(intensity, ln, ne, w=0, v1=0, v2=0, vth=None, wavelength=0.351, approx=True,
@@ -338,7 +353,7 @@ def backward_srs_lint(ln, intensity, ne, vth, v1=0, v2=0, wavelength=0.351, accu
         return np.sqrt(backward_srs_lint_wdl(intensity, ln, ne, 0, v1, v2, vth, wavelength, approx=False,
                                              kappa_prime_approx=False, gamma0_approx=False)**2 +
                        backward_srs_lint_sdl(ln, ne, w=np.real(w), nu2=nu2, v1=v1, v2=v2)**2)
-    
+
     elif accuracy_level >= 4:
         w = plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne))
         k = backward_srs_k_epw(np.real(w), ne=ne)
