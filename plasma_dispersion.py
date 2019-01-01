@@ -15,7 +15,7 @@ def zfunction_prime2(z):
     return -2.0 * (zfunction(z) + z * zfunction_prime(z))
 
 
-def plasma_wave_w(ne, vth, k, inital_root_guess=None):
+def plasma_wave_w(ne, vth, k, inital_root_guess=None, kinetic=False):
     """
     calculate plasma wave frequency for given density and wavenumber
     :param ne: normalized plasma density
@@ -24,7 +24,22 @@ def plasma_wave_w(ne, vth, k, inital_root_guess=None):
     :param inital_root_guess: initial value for the root finder
     :return: plasma wave frequency (usually a complex number)
     """
-    wp = np.sqrt(ne)
+    if callable(k):
+
+        def plasma_wave_dispersion(x):
+            return np.sqrt(ne + 3. * (k(x) * vth)**2) - x
+
+        try:
+            wp = np.sqrt(ne)
+            guess = np.sqrt(ne + 3. * (k(wp) * vth)**2)
+            dispersion = scipy.optimize.newton(plasma_wave_dispersion, guess)
+        except:
+            return None
+    else:
+        dispersion = np.sqrt(ne + 3 * (k * vth)**2)
+    if not kinetic:
+        return dispersion
+
     if callable(k):
         def kvth(x):
             return vth * k(x)
@@ -35,17 +50,17 @@ def plasma_wave_w(ne, vth, k, inital_root_guess=None):
     def plasma_epsilon(x):
         # chi = chi_e(x)
         # print(chi)
-        kv = kvth(x)
+        kv = kvth(np.real(x))
         val = 1.0 - zfunction_prime(x / (kv * np.sqrt(2.))) * ne / (2 * kv * kv)
         return val
 
     if inital_root_guess is None:
         #    # use the Bohm-Gross dispersion formulas to get an initial guess for w
-        if callable(k):
-            inital_root_guess = np.sqrt(ne + 3 * (k(wp) * vth)**2)
-        else:
-            inital_root_guess = np.sqrt(ne + 3 * (k * vth)**2)
-    epsilon_root = scipy.optimize.newton(plasma_epsilon, inital_root_guess)
+        inital_root_guess = dispersion
+    try:
+        epsilon_root = scipy.optimize.newton(plasma_epsilon, inital_root_guess, maxiter=500)
+    except:
+        epsilon_root = None
     return epsilon_root
 
 
@@ -59,19 +74,13 @@ def plasma_wave_vg(vth, k, w=None, ne=None, kinetic=False):
     :param kinetic: if True then use the kinetic dispersion
     :return:
     """
-    wp = w if w else plasma_wave_w(ne, vth, k)
+    wp = w if w is not None else plasma_wave_w(ne, vth, k, kinetic=kinetic)
     kk = k(np.real(wp)) if callable(k) else k
     if kinetic:
         z = np.real(wp) / (kk * vth * np.sqrt(2))
-        if not w:
-            return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z)), wp
-        else:
-            return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z))
+        return np.real(wp / kk + 2 * np.sqrt(2) * vth * zfunction_prime(z) / zfunction_prime2(z))
     else:
-        if not w:
-            return 3. * np.real(kk) * vth * vth / np.real(wp), wp
-        else:
-            return 3. * np.real(kk) * vth * vth / np.real(wp)
+        return 3. * np.real(kk) * vth * vth / np.real(wp)
 
 
 def light_wave_vg(k=None, w=None, ne=None):

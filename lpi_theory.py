@@ -7,6 +7,8 @@ unless mentioned otherwise.
 import plasma_dispersion as plds
 import numpy as np
 from functools import partial
+import scipy
+from scipy import optimize
 
 
 def x2dens(dens_max, dens_min, x_max, x_min, x):
@@ -65,7 +67,7 @@ def phys_freq0(wavelength=0.351):
     return 2.998E14 / wavelength
 
 
-def linear_landaudamping(wp=0, kld=None, k=None, vth=None, ne=None):
+def linear_landaudamping(wp=None, kld=None, k=None, vth=None, ne=None):
     """
     calculate linear landau damping according to <Introduction to Plasma Physics, I.H.Hutchinson, chapter 5, (2001)
     http://silas.psfc.mit.edu/introplasma/> Eq. (5.232)
@@ -76,9 +78,9 @@ def linear_landaudamping(wp=0, kld=None, k=None, vth=None, ne=None):
     :param ne: plasma density
     :return: the same unit as w
     """
-    if not wp:
+    if wp is None:
         wp = np.sqrt(ne)
-    if not kld:
+    if kld is None:
         kld = k * vth / wp
     return np.sqrt(np.pi / 8) * wp / kld**3 * np.exp(-(1 / (2 * kld * kld) + 1.5))
 
@@ -86,8 +88,17 @@ def linear_landaudamping(wp=0, kld=None, k=None, vth=None, ne=None):
 #
 # ======================================== Stimulated Raman Scattering ================================================
 #
+def get_backward_srs_w(ne, vth, kinetic=True):
+    try:
+        iter(ne)
+        w = np.array([plds.plasma_wave_w(den, vth, k=partial(backward_srs_k_epw, ne=den), kinetic=kinetic) for den in ne])
+    except TypeError:
+        w = plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne), kinetic=kinetic)
+    return w
+
+
 def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, wavelength=0.351,
-                                 circular_laser=False):
+                                 circular_laser=False, kinetic=True):
     """
     Raman back scattering growth rate in homogeneous plasmas when damping is not important.
     See <Forslund, D. W., Kindel, J. M., & Lindman, E. L. (1975).
@@ -103,7 +114,7 @@ def backward_srs_growthrate_h_ud(intensity, ne, vth=None, k=None, w=None, wavele
     :return: growth rate normalized to laser frequency
     """
     if w is None:
-        w = np.real(plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne)))
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
     if k is None:
         k = backward_srs_k_epw(w, ne)
     if circular_laser:
@@ -115,7 +126,7 @@ def __backward_srs_growthrate_h_ud_qutcr(k, intensity, wavelength=0.351):
     return k * vosc(intensity, wavelength=wavelength) / 4
 
 
-def backward_srs_beta_forslung(intensity, ne, vth):
+def backward_srs_beta_forslung(intensity, ne, vth, kinetic=True):
     """
     A parameter quantifying whether absolute SRS is suppressed by damping
     <Forslund, D. W., Kindel, J. M., & Lindman, E. L. (1975).
@@ -125,10 +136,12 @@ def backward_srs_beta_forslung(intensity, ne, vth):
     :param ne: density normalized to critical density
     :param vth: thermal velocity
     """
-    vg, w = plds.plasma_wave_vg(vth, partial(backward_srs_k_epw, ne=ne), w=None, ne=ne)
+    w = get_backward_srs_w(ne, vth, kinetic=kinetic)
+    vg = plds.plasma_wave_vg(vth, partial(backward_srs_k_epw, ne=ne, kinetic=kinetic), w=w, ne=ne)
     wr = np.real(w)
     vm, kp = plds.light_wave_vg(backward_srs_k_epw(wr, ne), wr), backward_srs_k_epw(wr, ne)
-    return np.abs(np.imag(w)) / backward_srs_growthrate_h_ud(intensity, ne, k=kp, w=wr) * np.sqrt(vm / vg)
+    return np.abs(np.imag(w)) / backward_srs_growthrate_h_ud(intensity, ne, k=kp,
+                                                             w=wr, kinetic=kinetic) * np.sqrt(vm / vg)
 
 
 def backward_srs_k_epw(w, ne):
@@ -138,7 +151,21 @@ def backward_srs_k_epw(w, ne):
     :param ne: plasma density
     :return: wavenumber of plasma wave
     """
-    return np.sqrt(1 - ne) + np.sqrt((1 - w) * (1 - w) - ne)
+    try:
+        iter(ne)
+        return np.array([np.sqrt(1. - ni) + np.sqrt((1. - wi) * (1. - wi) - ni)
+                         if wi is not None and wi <= 1. and wi >= 0. else None for wi, ni in zip(np.real(w), ne)])
+    except TypeError:
+        try:
+            iter(w)
+            return np.array([np.sqrt(1. - ne) + np.sqrt((1. - wi) * (1. - wi) - ne)
+                             if wi is not None and wi <= 1. and wi >= 0. else None for wi in np.real(w)])
+        except TypeError:
+            if w is not None and np.real(w) <= 1. and np.real(w) >= 0.:
+                tmp = (1. - np.real(w)) * (1. -  np.real(w)) - ne
+            else:
+                return None
+            return np.sqrt(1. - ne) + np.sqrt(tmp) if tmp >= 0. else None
 
 
 def forward_srs_k_epw(w, ne):
@@ -148,11 +175,11 @@ def forward_srs_k_epw(w, ne):
     :param ne: plasma density
     :return: wavenumber of plasma wave
     """
-    return np.sqrt(1 - ne) - np.sqrt((1 - w) * (1 - w) - ne)
+    return np.sqrt(1. - ne) - np.sqrt((1. - w) * (1. - w) - ne)
 
 
 def backward_srs_convective_gain(intensity, ne, ln, wavelength=0.351, nu1=0, nu2=0, author='Albright',
-                                 gamma0=0, kappa_prime=None, vth=None, v1=None, v2=None):
+                                 gamma0=None, kappa_prime=None, vth=None, v1=None, v2=None, kinetic=True):
     """
     calculate linear convective gain factor for backward SRS.
     depending on the author parameter, see
@@ -178,10 +205,10 @@ def backward_srs_convective_gain(intensity, ne, ln, wavelength=0.351, nu1=0, nu2
     :param v2: group velocity of the plasma daughter wave
     :return:
     """
-    def factor(_gamma0=0, _kappa_prime=None, _v1=None, _v2=None, ln=None, ne=None, vth=None, wavelength=0.351):
-        wr = np.real(plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne)))
+    def factor(_gamma0, _v1, _v2, _kappa_prime=None, ln=None, ne=None, vth=None, wavelength=0.351):
         if _kappa_prime  is None:
-            k_p = _wavenumber_mismatch_backward_srs(ln, ne, vth, wavelength=wavelength, w=wr)
+            wr = np.real(get_backward_srs_w(ne, vth, kinetic=kinetic))
+            k_p = wavenumber_mismatch_backward_srs(ln, ne, vth, wavelength=wavelength, w=wr)
         else:
             k_p = _kappa_prime
         return _gamma0 * _gamma0 / np.abs(k_p * _v1 * _v2)
@@ -192,25 +219,26 @@ def backward_srs_convective_gain(intensity, ne, ln, wavelength=0.351, nu1=0, nu2
         return 8 * np.pi * np.pi * gamma0 * gamma0 * ln / wavelength / gn * (1 - nu1 * nu2 / gamma0)
 
     elif author.lower() == 'rosenbluth':
-        w = np.real(plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne)))
-        if not gamma0:
-            gamma0 = backward_srs_growthrate_h_ud(intensity, ne, w=w, wavelength=wavelength)
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
+        k = backward_srs_k_epw(np.real(w), ne)
+        if gamma0 is None:
+            gamma0 = backward_srs_growthrate_h_ud(intensity, ne, w=np.real(w), k=k,
+                                                  vth=vth,  wavelength=wavelength, kinetic=kinetic)
         if not v2 or not v1:
-            k = backward_srs_k_epw(w, ne)
-            v2 = plds.plasma_wave_vg(vth, k, w=w, ne=ne)
+            v2 = plds.plasma_wave_vg(vth, k, w=w, ne=ne, kinetic=kinetic)
             v1 = plds.light_wave_vg(k - np.sqrt(1 - ne), ne=ne)
-        return 2 * np.pi * factor(gamma0, kappa_prime, v1, v2, ln, ne, vth)
+        return factor(gamma0, v1, v2, kappa_prime, ln, ne, vth)
 
     elif author.lower() == 'willian':
         g = nu1 * nu2 / gamma0
-        return 2 * factor(gamma0, kappa_prime, v1, v2) * (np.arccos(g) - g * np.sqrt(1 - g * g)) if g < 1 else 0
+        return 2 * factor(gamma0, v1, v2, kappa_prime) * (np.arccos(g) - g * np.sqrt(1 - g * g))
 
     elif author.lower() == 'afeyan':
         g = nu1 * nu2 / gamma0
-        return 2 * np.pi * factor(gamma0, kappa_prime, v1, v2) * (1 - g) if g < 1 else 0
+        return 2 * np.pi * factor(gamma0, v1, v2, kappa_prime, ln, ne, vth) * (1 - g)
 
 
-def _wavenumber_mismatch_backward_srs(ln, ne, vth, k0=None, k=None, w=None, wavelength=0.351):
+def wavenumber_mismatch_backward_srs(ln, ne, vth, k0=None, k=None, w=None, wavelength=0.351):
     """
     calculate wavenumber mismatch as in <Liu, C. S., Rosenbluth, M. N., & White, R. B. (1974).
     Raman and Brillouin scattering of electromagnetic waves in inhomogeneous plasmas.
@@ -230,8 +258,8 @@ def _wavenumber_mismatch_backward_srs(ln, ne, vth, k0=None, k=None, w=None, wave
     return ne / (4. * np.pi * ln / wavelength) * (1. / (k0 - k) + 1. / (3. * k * vth * vth) - 1. / k0)
 
 
-def backward_srs_lint_wdl(intensity, ln, ne, w=0, v1=0, v2=0, vth=None, wavelength=0.351, approx=True,
-                          nu1=0, nu2=0, kappa_prime_approx=True, gamma0_approx=True):
+def backward_srs_lint_wdl(intensity, ln, ne, w=None, v1=0, v2=0, vth=None, wavelength=0.351, approx=True,
+                          nu1=0, nu2=0, kappa_prime_approx=True, gamma0_approx=True, kinetic=True):
     """
     Return the interaction length in the weak damping limit.
     See <Afeyan, B., & Hüller, S. (2013). Optimal Control of Laser-Plasma Instabilities Using Spike Trains of Uneven
@@ -261,32 +289,31 @@ def backward_srs_lint_wdl(intensity, ln, ne, w=0, v1=0, v2=0, vth=None, waveleng
     :param gamma0_approx: assume scattered light wave is near its turning point. Default is true.
     :return: The unit is micron
     """
+    if w is None:
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
     if not v2 or not v1:
-        if w:
-            v2 = plds.plasma_wave_vg(vth, k=partial(backward_srs_k_epw, ne=ne), w=w, ne=ne)
-        else:
-            v2, w = plds.plasma_wave_vg(vth, k=partial(backward_srs_k_epw, ne=ne), w=None, ne=ne)
+        v2 = plds.plasma_wave_vg(vth, k=partial(backward_srs_k_epw, ne=ne), w=w, ne=ne, kinetic=kinetic)
         v1 = plds.light_wave_vg(backward_srs_k_epw(np.real(w), ne=ne) - np.sqrt(1 - ne), ne=ne)
 
     if approx:
         return 4 * ln * wavelength * np.sqrt(1.14E-4 * np.abs(v2 / v1) / ne * intensity)
     else:
-        if w == 0:
-            w = np.real(plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne)))
         wr = np.real(w)
         gamma0 = __backward_srs_growthrate_h_ud_qutcr(backward_srs_k_epw(wr, ne), intensity, wavelength=wavelength)
         if not gamma0_approx:
             gamma0 *= np.sqrt(ne / (wr * (1 - wr)))
         if kappa_prime_approx:
-            kappa_prime = wr / (2 * v2 * ln)
+            kappa_prime = ne / (6 * (vth**2) * ln * backward_srs_k_epw(w=wr, ne=ne))
         else:
-            kappa_prime = _wavenumber_mismatch_backward_srs(ln, ne, vth, w=wr)
+            kappa_prime = wavenumber_mismatch_backward_srs(ln, ne, vth, w=wr) / wavelength * (2 * np.pi)
+        print(kappa_prime)
         return np.sqrt(backward_srs_convective_gain(intensity, ne, ln, nu1, nu2, author='afeyan', gamma0=gamma0,
-                                                    kappa_prime=kappa_prime, v1=v1, v2=v2) /
+                                                    kappa_prime=kappa_prime, v1=v1, v2=v2, kinetic=kinetic) /
                        (kappa_prime * np.sqrt(np.pi))) * 2
 
 
-def backward_srs_lint_sdl(ln, ne, w=0., nu1=0., nu2=0., v1=None, v2=None, vth=None, kappa_prime_approx=True):
+def backward_srs_lint_sdl(ln, ne, w=0., nu1=0., nu2=0., v1=None, v2=None, vth=None,
+                          kappa_prime_approx=True, kinetic=True):
     """
     Return the interaction length in the strong damping limit.
     See <Afeyan, B., & Hüller, S. (2013). Optimal Control of Laser-Plasma Instabilities Using Spike Trains of Uneven
@@ -307,7 +334,7 @@ def backward_srs_lint_sdl(ln, ne, w=0., nu1=0., nu2=0., v1=None, v2=None, vth=No
     :return: The unit is micron
     """
     if not w or not nu2:
-        w_tmp = plds.plasma_wave_w(ne, vth, k=partial(backward_srs_k_epw, ne=ne))
+        w_tmp = get_backward_srs_w(ne, vth, kinetic=kinetic)
         if not nu2:
             nu2 = np.abs(np.imag(w_tmp))
         if not w:
@@ -317,29 +344,29 @@ def backward_srs_lint_sdl(ln, ne, w=0., nu1=0., nu2=0., v1=None, v2=None, vth=No
         return 4 * ln * nu2 / w
     else:
         if not v2 or not v1:
-            v2 = plds.plasma_wave_vg(vth, k=backward_srs_k_epw(w, ne), w=w, ne=ne)
+            v2 = plds.plasma_wave_vg(vth, k=backward_srs_k_epw(w, ne), w=w, ne=ne, kinetic=kinetic)
             v1 = plds.light_wave_vg(backward_srs_k_epw(np.real(w), ne=ne) - np.sqrt(1 - ne), ne=ne)
-        kappa_prime = _wavenumber_mismatch_backward_srs(ln, ne, vth, w=np.real(w))
+        kappa_prime = wavenumber_mismatch_backward_srs(ln, ne, vth, w=np.real(w))
         return 2 * (nu1 / np.abs(v1) + nu2 / np.abs(v2)) / np.abs(kappa_prime)
 
 
 def backward_srs_lint(ln, intensity, ne, vth, v1=0, v2=0, wavelength=0.351, accuracy_level=0):
     if accuracy_level <= 0:
-        w = plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne))
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
         k = backward_srs_k_epw(np.real(w), ne=ne)
         nu2 = linear_landaudamping(k=k, vth=vth, ne=ne)
         return np.sqrt(backward_srs_lint_wdl(intensity, ln, ne, 0, v1, v2, vth, wavelength)**2 +
                        backward_srs_lint_sdl(ln, ne, w=np.real(w), nu2=nu2, v1=v1, v2=v2)**2)
 
     elif accuracy_level == 1:
-        w = plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne))
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
         k = backward_srs_k_epw(np.real(w), ne=ne)
         nu2 = linear_landaudamping(k=k, vth=vth, ne=ne)
         return np.sqrt(backward_srs_lint_wdl(intensity, ln, ne, 0, v1, v2, vth, wavelength, approx=False)**2 +
                        backward_srs_lint_sdl(ln, ne, w=np.real(w), nu2=nu2, v1=v1, v2=v2)**2)
 
     elif accuracy_level == 2:
-        w = plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne))
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
         k = backward_srs_k_epw(np.real(w), ne=ne)
         nu2 = linear_landaudamping(k=k, vth=vth, ne=ne)
         return np.sqrt(backward_srs_lint_wdl(intensity, ln, ne, 0, v1, v2, vth, wavelength, approx=False,
@@ -347,7 +374,7 @@ def backward_srs_lint(ln, intensity, ne, vth, v1=0, v2=0, wavelength=0.351, accu
                        backward_srs_lint_sdl(ln, ne, w=np.real(w), nu2=nu2, v1=v1, v2=v2)**2)
 
     elif accuracy_level == 3:
-        w = plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne))
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
         k = backward_srs_k_epw(np.real(w), ne=ne)
         nu2 = linear_landaudamping(k=k, vth=vth, ne=ne)
         return np.sqrt(backward_srs_lint_wdl(intensity, ln, ne, 0, v1, v2, vth, wavelength, approx=False,
@@ -355,7 +382,7 @@ def backward_srs_lint(ln, intensity, ne, vth, v1=0, v2=0, wavelength=0.351, accu
                        backward_srs_lint_sdl(ln, ne, w=np.real(w), nu2=nu2, v1=v1, v2=v2)**2)
 
     elif accuracy_level >= 4:
-        w = plds.plasma_wave_w(ne, vth, partial(backward_srs_k_epw, ne=ne))
+        w = get_backward_srs_w(ne, vth, kinetic=kinetic)
         k = backward_srs_k_epw(np.real(w), ne=ne)
         nu2 = linear_landaudamping(k=k, vth=vth, ne=ne)
         return np.sqrt(backward_srs_lint_wdl(intensity, ln, ne, 0, v1, v2, vth, wavelength, approx=False,
@@ -400,10 +427,78 @@ def srs_side_scattering_growthrate(ln, intensity, ne, vth, k0=None, wavelength=0
 #
 # ============================================= Two Plasmon Decay =====================================================
 #
-def tpd_small_k(w, ne):
-    pass
+def tpd_k_perp(ne, vth):
+    """
+    calculate the perpendicular wavevector of the TPD daughter waves assuming that the wavevectors of the two daughter
+    waves satisfy the TPD hyperbola equation: kl(kl-k0)=kp^2, where kl is the longitudinial component of the daughter
+    waves, kp is the perpendicular component and k0 is the local wavevector of the incident laser
+    :param ne: plasma density normalized to critical density, must be a number between 0.0 and 1.0
+    :param vth: thermal velocity
+    :return: kp normalized to \omega_0/c [i.e. 1/sqrt(1-ne)]
+    """
+    ve = 3. * vth * vth
+
+    # write down the TPD dispersion as a function of k_perp
+    def tpd_dispersion_fluid(x):
+        _tmp = 1. + 4 * x*x - ne
+        return 1. - ( np.sqrt(ne + (x*x + (0.5 * (np.sqrt(_tmp) - np.sqrt(1. - ne)))**2) * ve) +
+                     np.sqrt(ne + (x*x + (0.5 * (np.sqrt(_tmp) + np.sqrt(1. - ne)))**2) * ve)) if _tmp > 0. else None
+    tmp = (1. - 2. * np.sqrt(ne) / ve - 1. + ne) / 3.
+    guess = np.sqrt(tmp) if tmp > 0 else 0.
+    try:
+        return scipy.optimize.newton(tpd_dispersion_fluid, guess)
+    except:
+        return None
 
 
-def tpd_large_k(w, ne):
-    pass
+def tpd_small_k(kp, ne):
+    return np.sqrt(kp*kp + (0.5 * (np.sqrt(1. - ne + 4 * kp * kp) - np.sqrt(1. - ne)))**2)
+
+
+def tpd_large_k(kp, ne):
+    return np.sqrt(kp*kp + (0.5 * (np.sqrt(1. - ne + 4 * kp * kp) + np.sqrt(1. - ne)))**2)
+
+
+def tpd_growth_rate(intensity, ne, vth, ln, kp=None, author='Simon', Local=False, wavelength=0.351):
+    """
+    calculate the growth rate of the absolute TPD modes in an inhomogeneous plasma
+    :param intensity: in 10^14 Watt/cm^2
+    :param ne: plasma density normalized to critical density
+    :param ln: plasma density scale length in micron
+    :param wavelength: wavelength of the laser in micron
+    """
+    try:
+        iter(ne)
+    except TypeError:
+        ne = [ne]
+
+    if kp is None:
+        kptmp = [tpd_k_perp(n, vth) for n in ne]
+        kpvk0 = [k / np.sqrt(1. - n) if k is not None else None for k,n in zip(kptmp,ne)]
+    else:
+        try:
+            iter(kp)
+        except TypeError:
+            kp = [kp]
+        finally:
+            lkp, lne = len(kp), len(ne)
+            if lkp > lne:
+                ne = ne + [ne[-1]] * (lkp - lne)
+            elif lkp < lne:
+                kp = kp + [kp[-1]] * (lne - lkp)
+
+    kpvk0 = [k / np.sqrt(1. - n) if k is not None else None for k,n in zip(kp, ne)]
+
+    if author.lower() == 'simon':
+        alpha = 0.08 * ln * np.sqrt(intensity)
+        beta = 1.41* ((vth*vth)*511.)**2 / (intensity * wavelength * wavelength)
+        betaq = [beta * k**2 if k is not None else None for k in kpvk0]
+        temp = [(9. * bq * bq + np.sqrt(3.) * np.sqrt( ( 1. + 27. * bq ) * bq**3 ) )**(1./3.) if bq is not None else None for bq in betaq]
+        sailst = [0.5 * ( -2. - 1. / (3.**(1./3.) * tmp ) + tmp / (3.**(2./3.) * bq)) if bq is not None else None for tmp,bq in zip(temp, betaq)]
+        grlb = [-np.sqrt( - k**2 * sai) / sai * ((1. + 2. * sai) - 2. * ((1. + sai)**2) *
+                                                    np.sqrt(beta) * np.sqrt((2. * sai - 1.) / sai) / alpha)
+                * 3. * vth * vth * (1. - np.sqrt(n))**2 if k is not None else 0 for k, sai, n in zip(kpvk0, sailst, ne)]
+        grlb = np.array([gr if gr > 0. else 0. for gr in grlb])
+        return grlb
+
 
